@@ -1,0 +1,14 @@
+/*
+ * Copyright (c) 2026 Intellifide LLC.
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * See LICENSE and NOTICE.md in the repository root.
+ */
+
+/* Theme bridge file.
+   Variables are defined in `index.css`; keep only baseline transitions here. */
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}

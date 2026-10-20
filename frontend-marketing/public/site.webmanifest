@@ -1,0 +1,15 @@
+{
+  "name": "Jualuma",
+  "short_name": "Jualuma",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020714",
+  "theme_color": "#020714",
+  "icons": [
+    {
+      "src": "/assets/jualuma-logo-main.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}

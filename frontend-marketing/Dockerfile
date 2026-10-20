@@ -1,0 +1,38 @@
+FROM node:20-bullseye AS build
+
+WORKDIR /app
+
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_ENV
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_SITE_ENV=$NEXT_PUBLIC_SITE_ENV
+
+COPY frontend-marketing/package*.json ./
+RUN npm ci
+
+COPY frontend-marketing/ ./
+RUN npm run build
+
+FROM gcr.io/distroless/nodejs20-debian12:nonroot AS runtime
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
+
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_ENV
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_SITE_ENV=$NEXT_PUBLIC_SITE_ENV
+
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+
+EXPOSE 8080
+
+CMD ["server.js"]

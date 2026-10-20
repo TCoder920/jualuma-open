@@ -1,0 +1,5 @@
+include ':app'
+include ':mobile-shared-core'
+project(':mobile-shared-core').projectDir = new File('../../mobile/shared-core')
+
+apply from: 'capacitor.settings.gradle'

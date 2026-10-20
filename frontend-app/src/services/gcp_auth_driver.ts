@@ -1,0 +1,326 @@
+/*
+ * Copyright (c) 2026 Intellifide LLC.
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * See LICENSE and NOTICE.md in the repository root.
+ */
+
+// This file replaces the Firebase SDK with direct REST API calls to GCP Identity Platform
+// Documentation: https://cloud.google.com/identity-platform/docs/use-rest-api
+
+import {
+  clearNativeSession,
+  loadNativeSession,
+  saveNativeSession,
+  type PersistedSessionPayload,
+} from './nativeSessionStore'
+
+const API_KEY = import.meta.env.VITE_GCP_API_KEY
+// Loading the local UI must not require credentials or contact a cloud service.
+const authFetch: typeof fetch = (...args) => {
+  if (!API_KEY || API_KEY === 'undefined') {
+    throw new Error('Authentication is unconfigured. Configure a separate sandbox Identity Platform project.');
+  }
+  return fetch(...args);
+};
+const IDENTITY_TOOLKIT_BASE = 'https://identitytoolkit.googleapis.com/v1'
+const SECURE_TOKEN_BASE = 'https://securetoken.googleapis.com/v1'
+
+export interface User {
+  uid: string
+  email: string | null
+  emailVerified: boolean
+  displayName: string | null
+  isAnonymous: boolean
+  getIdToken: (forceRefresh?: boolean) => Promise<string>
+}
+
+// In-memory storage for the current session
+let currentUser: User | null = null
+let _refreshToken: string | null = null
+let _idToken: string | null = null
+let _expiresAt = 0
+
+// Listeners for auth state changes
+type AuthStateListener = (user: User | null) => void
+const listeners: AuthStateListener[] = []
+
+const getStorage = () => {
+    if (
+        typeof localStorage !== 'undefined' &&
+        typeof localStorage.getItem === 'function' &&
+        typeof localStorage.setItem === 'function' &&
+        typeof localStorage.removeItem === 'function'
+    ) {
+        return localStorage
+    }
+    return null
+}
+
+const notifyListeners = () => {
+    listeners.forEach(l => l(currentUser))
+}
+
+const hydrateUser = (uid: string, email: string) => {
+  currentUser = {
+    uid,
+    email,
+    emailVerified: false,
+    displayName: null,
+    isAnonymous: false,
+    getIdToken: async (forceRefresh = false) => {
+      if (forceRefresh || Date.now() > _expiresAt - 60000) {
+        await refreshAuthToken()
+      }
+      return _idToken!
+    },
+  }
+}
+
+const applySessionPayload = (
+  payload: PersistedSessionPayload,
+  options: { notifyAuthState?: boolean; persistNative?: boolean } = {},
+) => {
+  _idToken = payload.idToken
+  _refreshToken = payload.refreshToken
+  _expiresAt = payload.expiresAt
+  hydrateUser(payload.uid, payload.email)
+
+  const storage = getStorage()
+  if (storage) {
+    storage.setItem('gcp_auth_session', JSON.stringify(payload))
+  }
+  if (options.persistNative !== false) {
+    void saveNativeSession(payload)
+  }
+  if (options.notifyAuthState !== false) {
+    notifyListeners()
+  }
+}
+
+export const onAuthStateChanged = (auth: any, listener: AuthStateListener) => {
+    listeners.push(listener)
+    // Immediately trigger with current user
+    listener(currentUser)
+    return () => {
+        const index = listeners.indexOf(listener)
+        if (index > -1) {
+            listeners.splice(index, 1)
+        }
+    }
+}
+
+// Helper: Persist session to localStorage (simple implementation)
+const saveSession = (
+  idToken: string,
+  refreshToken: string,
+  expiresIn: string,
+  localId: string,
+  email: string,
+  options: { notifyAuthState?: boolean } = {},
+) => {
+  const expiresAppx = Date.now() + parseInt(expiresIn, 10) * 1000
+  applySessionPayload({
+    idToken,
+    refreshToken,
+    expiresAt: expiresAppx,
+    uid: localId,
+    email,
+  }, { notifyAuthState: options.notifyAuthState })
+}
+
+const clearSession = () => {
+  currentUser = null
+  _idToken = null
+  _refreshToken = null
+  _expiresAt = 0
+  const storage = getStorage()
+  if (storage) {
+    storage.removeItem('gcp_auth_session')
+  }
+  void clearNativeSession()
+  notifyListeners()
+}
+
+// Restore session on load
+const restoreSession = () => {
+    const storage = getStorage()
+    if (!storage) return
+    const json = storage.getItem('gcp_auth_session')
+    if (json) {
+        try {
+            const data = JSON.parse(json)
+            applySessionPayload(data as PersistedSessionPayload, { notifyAuthState: false, persistNative: false })
+        } catch (e) {
+            console.error("Failed to restore session", e)
+            clearSession()
+        }
+    }
+}
+restoreSession()
+
+const restoreSessionFromNative = async () => {
+  if (currentUser) return
+  const payload = await loadNativeSession()
+  if (!payload) return
+  if (!payload.idToken || !payload.refreshToken || !payload.uid) return
+  applySessionPayload(payload, { notifyAuthState: true, persistNative: false })
+}
+void restoreSessionFromNative()
+
+
+const refreshAuthToken = async () => {
+    if (!_refreshToken) throw new Error("No refresh token available")
+
+    const response = await authFetch(`${SECURE_TOKEN_BASE}/token?key=${API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            grant_type: 'refresh_token',
+            refresh_token: _refreshToken
+        })
+    })
+
+    if (!response.ok) {
+        const err = await response.json()
+        clearSession()
+        throw new Error(err.error?.message || "Failed to refresh token")
+    }
+
+    const data = await response.json()
+    // data.id_token, data.refresh_token, data.expires_in, data.user_id
+    saveSession(
+      data.id_token,
+      data.refresh_token,
+      data.expires_in,
+      data.user_id,
+      currentUser?.email || '',
+      { notifyAuthState: false },
+    )
+    return data.id_token
+}
+
+
+// --- API Functions mimicking Firebase Auth ---
+
+export class IdentityError extends Error {
+    code: string
+    constructor(code: string, message: string) {
+        super(message)
+        this.code = code
+    }
+}
+
+
+const handleGcpError = (error: any) => {
+    const msg = error.error?.message || "Unknown error"
+    // Map GCP error messages to standard error codes for compatibility with existing app logic
+    if (msg.includes("EMAIL_EXISTS")) return new IdentityError('auth/email-already-in-use', "Email already in use")
+    if (msg.includes("INVALID_PASSWORD")) return new IdentityError('auth/wrong-password', "Invalid password")
+    if (msg.includes("EMAIL_NOT_FOUND")) return new IdentityError('auth/user-not-found', "User not found")
+    if (msg.includes("USER_DISABLED")) return new IdentityError('auth/user-disabled', "User disabled")
+    // Add more mappings as discovered
+    return new IdentityError('auth/unknown', msg)
+}
+
+export const createUserWithEmailAndPassword = async (auth: any, email: string, password: string) => {
+    const url = `${IDENTITY_TOOLKIT_BASE}/accounts:signUp?key=${API_KEY}`
+    const response = await authFetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            email,
+            password,
+            returnSecureToken: true
+        })
+    })
+
+    const data = await response.json()
+    if (!response.ok) {
+        throw handleGcpError(data)
+    }
+
+    saveSession(data.idToken, data.refreshToken, data.expiresIn, data.localId, data.email)
+
+    return { user: currentUser }
+}
+
+export const signInWithEmailAndPassword = async (auth: any, email: string, password: string) => {
+    const url = `${IDENTITY_TOOLKIT_BASE}/accounts:signInWithPassword?key=${API_KEY}`
+    const response = await authFetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            email,
+            password,
+            returnSecureToken: true
+        })
+    })
+
+    const data = await response.json()
+    if (!response.ok) {
+        throw handleGcpError(data)
+    }
+
+    saveSession(data.idToken, data.refreshToken, data.expiresIn, data.localId, data.email)
+    return { user: currentUser }
+}
+
+export const signOut = async (auth: any) => {
+   clearSession()
+}
+
+// Stub for now, can implement via accounts:sendOobCode if needed
+export const confirmPasswordReset = async (auth: any, oobCode: string, newPassword: string) => {
+    const url = `${IDENTITY_TOOLKIT_BASE}/accounts:resetPassword?key=${API_KEY}`
+    const response = await authFetch(url, {
+        method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ oobCode, newPassword })
+    })
+    if (!response.ok) {
+         const data = await response.json()
+         throw handleGcpError(data)
+    }
+}
+
+export const verifyPasswordResetCode = async (auth: any, oobCode: string) => {
+      const url = `${IDENTITY_TOOLKIT_BASE}/accounts:resetPassword?key=${API_KEY}`
+    const response = await authFetch(url, {
+        method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ oobCode })
+         // Note: verifyPasswordResetCode in firebase just checks the code.
+         // The REST API allows checking by sending oobCode only (no password)
+    })
+    if (!response.ok) {
+         const data = await response.json()
+         throw handleGcpError(data)
+    }
+    const data = await response.json()
+    return data.email // Returns email if valid
+}
+
+export const deleteUser = async (user: User) => {
+    const token = await user.getIdToken()
+    const url = `${IDENTITY_TOOLKIT_BASE}/accounts:delete?key=${API_KEY}`
+    const response = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: token })
+    })
+     if (!response.ok) {
+         const data = await response.json()
+         throw handleGcpError(data)
+    }
+    clearSession()
+}
+
+
+// Mock Auth object to satisfy imports
+export const auth = {
+    get currentUser() { return currentUser }
+}
