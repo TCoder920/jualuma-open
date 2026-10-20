@@ -115,6 +115,9 @@ def verify_plaid_webhook_signature(
             detail="Invalid Plaid webhook signature header.",
         ) from exc
 
+    if header.get("alg") != "ES256":
+        raise HTTPException(status_code=400, detail="Unsupported Plaid webhook algorithm.")
+
     key_id = header.get("kid")
     if not key_id:
         raise HTTPException(
@@ -123,7 +126,7 @@ def verify_plaid_webhook_signature(
         )
 
     key = _fetch_plaid_webhook_key(str(key_id))
-    algorithm = key.get("alg") or header.get("alg") or "ES256"
+    algorithm = "ES256"
     try:
         claims = jwt.decode(
             plaid_verification,
@@ -139,19 +142,17 @@ def verify_plaid_webhook_signature(
 
     request_hash = claims.get("request_body_sha256")
     expected_hash = hashlib.sha256(payload).hexdigest()
-    if request_hash and request_hash != expected_hash:
+    if not isinstance(request_hash, str) or not hmac.compare_digest(request_hash, expected_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Plaid webhook payload hash mismatch.",
         )
 
     issued_at = claims.get("iat")
-    if isinstance(issued_at, int | float):
-        if abs(int(time.time()) - int(issued_at)) > settings.plaid_webhook_tolerance_seconds:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Plaid webhook signature has expired.",
-            )
+    if isinstance(issued_at, bool) or not isinstance(issued_at, int | float):
+        raise HTTPException(status_code=400, detail="Missing Plaid webhook issue time.")
+    if abs(time.time() - issued_at) > min(settings.plaid_webhook_tolerance_seconds, 300):
+        raise HTTPException(status_code=400, detail="Plaid webhook signature has expired.")
 
     return True
 

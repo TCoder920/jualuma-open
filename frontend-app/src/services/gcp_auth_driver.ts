@@ -16,11 +16,11 @@ import {
 
 const API_KEY = import.meta.env.VITE_GCP_API_KEY
 // Loading the local UI must not require credentials or contact a cloud service.
-const authFetch: typeof fetch = (...args) => {
+const authFetch: typeof fetch = (input, init) => {
   if (!API_KEY || API_KEY === 'undefined') {
     throw new Error('Authentication is unconfigured. Configure a separate sandbox Identity Platform project.');
   }
-  return fetch(...args);
+  return fetch(input, init);
 };
 const IDENTITY_TOOLKIT_BASE = 'https://identitytoolkit.googleapis.com/v1'
 const SECURE_TOKEN_BASE = 'https://securetoken.googleapis.com/v1'

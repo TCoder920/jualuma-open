@@ -1,6 +1,6 @@
 # Migration validation — 2026-10-20
 
-- Backend tests: **164 passed, 1 skipped**; includes mocked billing/webhook checks.
+- Backend tests: **171 passed, 1 skipped**; includes mocked billing/webhook checks.
 - Main web app tests: **86 passed** across 24 files.
 - Support portal tests: **1 passed**. Marketing tests: **1 passed**.
 - Python dependency installation and `pip check`: passed.
@@ -22,7 +22,7 @@ No production services, customer data, deployments, banking transactions, or bro
 ## Remaining scoped dependency advisories
 
 Python-jose 3.5.0 (`PYSEC-2026-4298`) and ecdsa 0.19.2 (`PYSEC-2026-1325`)
-have no fixes listed. Authentication pins RS256 and Plaid verification pins its allowed algorithm;
+have no fixes listed. Authentication pins RS256 and Plaid verification is explicitly restricted to ES256;
 the reported HMAC algorithm-confusion precondition is not enabled. ECDSA signing/key generation
 through the vulnerable pure-Python API is not used. Keep explicit algorithm restrictions and the
 cryptography backend. The test runner was upgraded to a patched version.
@@ -45,4 +45,4 @@ The copyright owner's authorized representative approved AGPLv3 licensing on 202
 Proprietary/PolyForm restrictions were replaced for owner-authored code; copyright attribution
 and third-party notices remain. Stripe resource conversion supports current SDK objects.
 Missing sandbox authentication configuration now produces an action-level error rather than
-preventing the local UI from loading. SVG parsing uses defusedxml.
+preventing the local UI from loading. SVG parsing uses defusedxml. Plaid verification requires ES256, a matching body hash, and a fresh issue time, following https://plaid.com/docs/api/webhooks/webhook-verification/.
