@@ -15,7 +15,7 @@ passlib[bcrypt]==1.7.4
 email-validator>=2.2.0
 google-cloud-firestore==2.21.0
 google-cloud-storage==3.6.0
-google-cloud-pubsub==2.35.0
+google-cloud-pubsub==2.43.0
 google-generativeai==0.8.6
 google-cloud-aiplatform
 google-api-python-client>=2.0.0
